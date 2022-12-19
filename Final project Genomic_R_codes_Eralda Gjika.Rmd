@@ -1,0 +1,783 @@
+---
+title: "Final Project_Gene Expression data Analysis"
+author: "Eralda Gjika"
+date: "December 2022"
+output: html_notebook
+---
+
+Reference:
+https://rdrr.io/cran/TSMining/
+https://rpubs.com/esobolewska/dtw-time-series
+https://cran.r-project.org/web/packages/STMotif/vignettes/STMotif.html
+https://cran.r-project.org/web/packages/tsmp/vignettes/press.html
+
+
+# Import dhe dataset 
+The data was downloaded from the author source. Then imported in R as a excel file. 
+```{r}
+library(readxl)
+Table_S1_DEgen <- read_excel("D:/ALDA 2021/CARLETON 2022/STAT5900-Genomic/Final Project STAT5900F/Table S1 Rev1- Differentially expressed gene during encystation.xlsx",   sheet = "log2 fold change")
+#View(Table_S1_DEgen)
+head(Table_S1_DEgen)
+
+```
+
+```{r}
+Gen_T1_T2<-Table_S1_DEgen[,-3] #save gene_id and time from T1 to T2
+head(Gen_T1_T2)
+Gen_T1_T2$Geneid=as.factor(Gen_T1_T2$Geneid)
+Gen_T1_T2$T1 =as.numeric(Gen_T1_T2$T1)
+```
+# Check if rows are standardized
+```{r}
+mean(as.matrix(Gen_T1_T2[1,-c(1,2)],na.rm = T))# try for the first row
+sd(as.matrix(Gen_T1_T2[1,-c(1,2)],na.rm = T)) # try for the first row
+```
+
+# Delete observations with missing data n%
+```{r}
+# this function will delete all rows with missing data based on a threshold n (n%)
+delete.row_na <- function(D, n) {
+  D[rowSums(D==0)<= n*ncol(D),]
+}
+```
+
+Remove observations with missing values more than 95% (rows removed)
+```{r}
+gen_T1_T2_del<-delete.row_na(Gen_T1_T2[,-c(1,2)],0.95)
+dim(gen_T1_T2_del)
+```
+
+```{r i_names}
+i_names<-rownames(gen_T1_T2_del)# names of genes saved after removing those with NA
+length(i_names)
+head(i_names)
+```
+
+# A function which will Standardize the rows of the dataframe.
+Each row is considered as a time series (observation). For a better similarity measure we will standardize the time series (each row of the dataset).
+
+```{r}
+ByRow_Sd=function(M){
+	A=matrix(NA,nrow=nrow(M),ncol=ncol(M))
+	  for(i in 1:nrow(M)) 
+	{
+	  for (j in 1:ncol(M))
+	  {
+	    A[i,j]=(M[i,j]-mean(M[i,],na.rm=T))/sd(M[i,],na.rm = T)
+	  }
+  }
+ return(A)
+	}
+```
+
+
+
+```{r}
+# transform our dataframe as a matrix to work better with the standardization function by row (removed the geneID column)
+Gen_1<-as.matrix(gen_T1_T2_del[,-1])
+Gen_standardized<-ByRow_Sd(Gen_1)
+# checking for the first row the mean and sd
+mean(Gen_standardized[1,],na.rm = T)
+sd(Gen_standardized[1,],na.rm=T)
+```
+
+# Create a function which will plot each gene 
+(after log2 transformed taken from the authors)
+```{r}
+# Graph before standardization
+Plot_gene_real=function(M){
+  A=plot(M[1,],ylim=c(-5,10),xlab="Time",ylab="value",main="Gene expression over time-before",type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="darkblue")
+}
+  print(A)
+}
+
+# before removing T1 which is 0 for all genes
+Plot_gene_real(Gen_1)
+abline(v=4,col="red",lwd=2)
+abline(v=7,col="purple",lwd=2)
+abline(v=11,col="green",lwd=2)
+arrows(10,-5,11,-3.5, col="green",lwd=2)
+arrows(10,10,11,9.5,col="green",lwd=2)
+text(5,-3,"time 10.5h",col="red")
+text(5.8,10,"time 21h",col="purple")
+text(9.6,-4.5,"Cyst",col="green")
+
+# after removing T1 which is 0 for all genes
+Plot_gene_real(Gen_1)
+abline(v=4,col="red",lwd=2)
+abline(v=7,col="purple",lwd=2)
+abline(v=10,col="green",lwd=2)
+arrows(9,-5,10,-3.5, col="green",lwd=2)
+arrows(9,10,10,9.5,col="green",lwd=2)
+text(5,-3,"time 10.5h",col="red")
+text(5.8,10,"time 21h",col="purple")
+text(9.6,-4.5,"Cyst",col="green")
+```
+Since they all start at time 0 in moment of time T1 we may remove this time from our consideration!
+
+```{r}
+Plot_gene_real(Gen_1)
+```
+
+# Function which will plot genes after standardization 
+```{r}
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-3.5,3.5),xlab="Time",ylab="value",main="Gene expression over time-after")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="darkblue")
+}
+  print(A)
+  }
+```
+
+
+```{r}
+Plot_gene(Gen_standardized)
+abline(v=4,col="red",lwd=2)
+abline(v=7,col="purple",lwd=2)
+abline(v=10,col="green",lwd=2)
+arrows(8,4.5,10,3.1, col="green",lwd=2)
+arrows(8,-4.5,10,-3.1,col="green",lwd=2)
+text(5,-3,"time 10.5h",col="red")
+text(5.8,3,"time 21h",col="purple")
+text(9.6,-3,"Cyst",col="green")
+
+```
+
+# Create some graphs for the gene evolution using ggplot
+
+```{r}
+library(data.table)
+library(dplyr)
+# transpose function
+Gen_ID<-Gen_T1_T2$Geneid # save geneID information for latter
+gen_T1_T2_transp<-t(Gen_standardized) # standardized time series
+dim(gen_T1_T2_transp)
+# in the transpose matrix genes are in columns and time in rows,  12x5320 
+library(tidyr)
+library(tidyverse)
+gene_long<-gather(data.frame(gen_T1_T2_transp[c(1:11),c(1:3908)])) 
+head(gene_long)
+dim(gene_long)
+gene_long$value=as.numeric(gene_long$value)
+# make a timepoint column
+t<-c("3.5h","7h","10.5h","14h","17.5h","21h","24.5h","28h","31.5h","Cyst","T2")
+gene_long<- gene_long %>% mutate(time=rep(1:11,3908))
+View(gene_long)
+
+
+# plot by key first 12 genes
+gene_long[1:220,]  %>% 
+  ggplot(aes(x=time, y=value, color=key)) +
+  geom_line( size=1) +
+  ggtitle("Gene sequences over time") +
+  theme(legend.position="none")+
+  facet_wrap(~ key , scales = "free", nrow= 5) 
+
+gene_long[1:44,]  %>% 
+     ggplot(aes(x=time, y=value, color=key)) +
+     geom_line( size=1) +
+     ggtitle("Gene sequences over time") +
+     theme(legend.position="none")+
+     facet_wrap(~ key , scales = "free", nrow= 1) 
+ 
+```
+
+```{r}
+# plot by key first 12 genes
+t1<-c("3.5h","7h","10.5h","14h","17.5","21h","24.5h","28h","31.5h","cycl","T2")
+gene_long<-gene_long  %>% mutate(TIME=rep(t1,3908))
+gene_long %>%
+    ggplot(aes(x=time, y=value, color=key)) +
+    geom_line( size=0.1) +
+    ggtitle("gene evolution over time") +
+    theme(legend.position="none")
+
+```
+
+# Create a time series with all genes together
+This will halp us use the time series methodologies. The long time series here will have a frequency of 11.
+
+```{r}
+library(fpp3)
+library(forecast)
+library(fpp2)
+plot(ts(gene_long$value,start=1, frequency=11), main="long time series of observations", col="darkblue")
+# ggseasonplot(ts(gene_long$value,start=2000, frequency=12),season.labels = NULL)
+autoplot(ts(gene_long$value,start=1, frequency=11),col="darkblue")
+
+```
+
+```{r}
+library(fpp3)
+library(forecast)
+set.seed(12345678)
+gene_ts<-ts(gene_long$value, start=1,frequency=11)
+#ggseasonplot(gene_ts)
+seasonplot(gene_ts, col=c("pink","orange","purple","red","grey"),main="Seasonplot gene time expression",xlab="time",season.labels=c("3.5h","7h","10.5h","14h","17.5","21h","24.5h","28h","31.5h","cycl","T2")) #ok
+
+seasonplot(gene_ts, col=c("pink","orange","purple","red","grey"),main="Seasonplot",xlab="time",season.labels=c("3.5h","7h","10.5h","14h","17.5","21h","24.5h","28h","31.5h","cycl","T2")) #ok
+```
+#TSMP library
+
+reference: https://github.com/matrix-profile-foundation/tsmp
+```{r}
+library(tsmp)
+```
+
+
+Reference: https://www.r-bloggers.com/2020/09/100-time-series-data-mining-questions-part-2/
+
+
+```{r}
+# Basic workflow:
+matrix <- tsmp(gene_ts, window_size = 11) %>%
+  find_motif(n_motifs = 3) %T>%
+  plot()
+
+matrix <- tsmp(gene_ts, window_size = 11) %>%
+  find_motif(n_motifs = 4) %T>%
+  plot()
+```
+
+```{r}
+tictac3 <- Sys.time()
+Motif.discovery<-compute(gene_ts, 11) %>% motifs() %>% visualize()
+Motif.discovery
+```
+
+```{r}
+tictac3 <- Sys.time() - tictac3
+
+cat(paste("compute(), motifs(), visualize() finished in ", tictac3, "seconds (with plot!)\n\n"))
+## compute(), motifs(), visualize() finished in  0.0680019855499268 seconds (with plot!)
+```
+# Try codes below to obtain the different motifs
+```{r}
+# Motif.discovery<-compute(gene_ts, 11) %>% motifs(3) %>% visualize()
+# Motif.discovery
+```
+
+Look at the value of motifs what changes in visualization 
+```{r}
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(5) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(6) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(10) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(20) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(200) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(50) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(2) %>% visualize()
+ # Motif.discovery<-compute(gene_ts, 11) %>% motifs(20) %>% visualize()
+```
+
+
+# Cluster analysis
+
+## Euclidean distance matrix
+After removing T1 which is 0 for all observations
+```{r}
+library(factoextra)
+eu_dist<-dist(Gen_1)
+hclust<-hclust(eu_dist)
+plot(hclust)
+manhatan_dist<-dist(Gen_1, method="manhattan")
+fviz_dist(manhatan_dist)
+
+# Cluster analysis when T1 is removed and in original data
+# 73% variance explained
+k2<- kmeans(data.frame(Gen_1), centers = 3, nstart = 25)
+fviz_cluster(k2,data=data.frame(Gen_1),label=NA, main="Before standardization")
+
+k2.1<- kmeans(data.frame(Gen_1), centers = 4, nstart = 25)
+fviz_cluster(k2.1,data=data.frame(Gen_1),label=NA, main="Before standardization")
+
+
+# for k2.1
+# save the index for genes in each cluster and visualize them
+cluster_1.2<-which(k2.1$cluster==1)
+cluster_2.2<-which(k2.1$cluster==2)
+cluster_3.2<-which(k2.1$cluster==3)
+cluster_4.2<-which(k2.1$cluster==4)
+
+length(cluster_1.2)
+#
+length(cluster_2.2)
+#
+length(cluster_3.2)
+#
+length(cluster_4.2)
+
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-3.5,5),xlab="Time",ylab="value",main="Gene expression over time-before",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+   lines(M[1,],lwd=3,col="red")
+   print(A)
+  }
+# get the cluster visualization in one
+par(mfrow=c(1,4))
+Plot_gene(Gen_1[cluster_1.2,-1])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-3.5,3),xlab="Time",ylab="value",main="Gene expression over time-before",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+  lines(M[1,],lwd=3,col="red")
+  print(A)
+  }
+Plot_gene(Gen_1[cluster_2.2,-1])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-0.5,9),xlab="Time",ylab="value",main="Gene expression over time-before",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+   lines(M[1,],lwd=3,col="red")
+   print(A)
+  }
+Plot_gene(Gen_1[cluster_3.2,-1])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-2,6),xlab="Time",ylab="value",main="Gene expression over time-before",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+  lines(M[1,],lwd=3,col="red")
+  print(A)
+  }
+Plot_gene(Gen_1[cluster_4.2,])
+
+########################### After standardization ###############
+
+k2.1<- kmeans(data.frame(Gen_standardized), centers = 4, nstart = 25)
+fviz_cluster(k2.1,data=data.frame(Gen_1),label=NA, main="Before standardization")
+
+
+# 
+# for k2.1
+
+# save the index for genes in each cluster and visualize them
+cluster_1.2<-which(k2.1$cluster==1)
+cluster_2.2<-which(k2.1$cluster==2)
+cluster_3.2<-which(k2.1$cluster==3)
+cluster_4.2<-which(k2.1$cluster==4)
+
+
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-2,3),xlab="Time",ylab="value",main="Gene expression over time-after",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+   lines(M[1,],lwd=3,col="red")
+   print(A)
+  }
+# get the cluster visualization in one
+par(mfrow=c(1,4))
+Plot_gene(Gen_standardized[cluster_1.2,])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-3,3),xlab="Time",ylab="value",main="Gene expression over time-after",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+  lines(M[1,],lwd=3,col="red")
+  print(A)
+  }
+Plot_gene(Gen_standardized[cluster_2.2,-1])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-2.2,3),xlab="Time",ylab="value",main="Gene expression over time-after",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+   lines(M[1,],lwd=3,col="red")
+   print(A)
+  }
+Plot_gene(Gen_standardized[cluster_3.2,])
+Plot_gene=function(M){
+  A=plot(M[1,],ylim=c(-2.3,3),xlab="Time",ylab="value",main="Gene expression over time-after",col="red",lwd=3,type="l")
+for (i in 1:nrow(M)){
+    lines(M[i,],col="grey")
+}
+  lines(M[1,],lwd=3,col="red")
+  print(A)
+  }
+Plot_gene(Gen_standardized[cluster_4.2,])
+
+###################################
+
+# after data are transformed-> standardized data
+# 78% variance explained
+k3<- kmeans(data.frame(Gen_standardized[,]), centers = 3, nstart = 25)
+fviz_cluster(k3,data=data.frame(Gen_standardized[,]),label=NA,main="After standardization")
+
+k4<- kmeans(data.frame(Gen_standardized[,]), centers = 4, nstart = 25)
+fviz_cluster(k4,data=data.frame(Gen_standardized[,]),label=NA,main="After standardization")
+
+# save the index for genes in each cluster and visualize them
+cluster_1<-which(k3$cluster==1)
+cluster_2<-which(k3$cluster==2)
+cluster_3<-which(k3$cluster==3)
+length(cluster_1)
+#[1] 1587
+length(cluster_2)
+#[1] 727
+length(cluster_3)
+#[1] 1594
+
+# get the cluster visualization in one
+par(mfrow=c(1,3))
+Plot_gene(Gen_1[cluster_1,])
+Plot_gene(Gen_1[cluster_2,])
+Plot_gene(Gen_1[cluster_3,])
+```
+
+Reference: https://www.r-bloggers.com/2019/10/cluster-multiple-time-series-using-k-means-2/
+
+In standardized data we see a clear division of genes in clusters.
+```{r}
+# for visualization purpose
+time_names<-colnames(Gen_1)# save time names
+
+colnames(Gen_standardized)<-time_names
+View(Gen_standardized)
+heatmap(Gen_standardized)
+heatmap(Gen_1)
+```
+
+## Manhattan distance
+```{r}
+library(factoextra)
+manhatan_dist<-dist(Gen_1, method="manhattan")
+hclust<-hclust(manhatan_dist)
+plot(hclust)
+fviz_dist(manhatan_dist)
+
+manhatan_dist<-dist(Gen_standardized, method="manhattan")
+fviz_dist(manhatan_dist)
+
+```
+
+## Minkowski distance
+```{r}
+library(factoextra)
+minkowski_dist<-dist(Gen_1, method="minkowski",p=2)
+hclust<-hclust(minkowski_dist)
+plot(hclust)
+fviz_dist(minkowski_dist)
+
+
+```
+
+```{r}
+minkowski_dist<-dist(Gen_standardized, method="minkowski",p=2)
+fviz_dist(minkowski_dist)
+
+eucl_dist<-dist(Gen_standardized)
+fviz_dist(eucl_dist)
+```
+
+
+
+reference: https://stackoverflow.com/questions/3081066/what-techniques-exists-in-r-to-visualize-a-distance-matrix
+```{r}
+eu_dist<-dist(Gen_standardized)
+dist_m <- as.matrix(eu_dist)
+#dis_matrix<-write.csv(dist_m, "dist_matrix_graph.csv") # if want to save the result in csv
+dist_mi <- 1/dist_m # one over, as qgraph takes similarity matrices as input
+library(qgraph)
+
+
+#jpeg('example_forcedraw.jpg', width=1000, height=1000, unit='px')
+qgraph(dist_mi[1:100,1:100], layout='spring', vsize=3)
+#dev.off()
+```
+
+```{r}
+index<-which(dist_mi<=0.3)
+dist_na<-dist_mi
+dist_na[-index]="NA"
+dim(dist_na)
+dist_reduced<-na.omit(dist_na)
+dim(dist_reduced)
+
+qgraph(na.omit(dist_reduced), layout='spring', vsize=3)
+
+```
+
+
+
+# Taking too long to run!!
+```{r}
+#qgraph(dist_mi[1:500,1:500], layout='spring', vsize=3)
+
+```
+
+It seems from the cluster analysis and graphs that there is a small world of genes which are clearly different from the other genes. And these genes are the ones which have changes behavior during the last time periods.
+
+```{r}
+Q<-qgraph(dist_mi[3000:3900,3000:3900], layout='spring', vsize=3)
+# Q
+# From		To	  Weight
+# 1 	 --- 	 2 	 0.83 
+# 2 	 --- 	 3 	 0.83 
+# 1 	 --- 	 4 	 0.86 
+# 2 	 --- 	 4 	 2.94 
+# 3 	 --- 	 4 	 0.86 
+```
+
+reference: http://sachaepskamp.com/qgraph/examples
+```{r}
+# # Correlations:
+# Q <- qgraph(dist_mi[1:500,1:500], minimum = 0.1, cut = 0.9, vsize = 1.5, borders = TRUE)
+# title("Distance Graph", line = 2.5)
+# qgraph(Q, overlay = TRUE)
+# title("distances", line = 2.5)
+```
+
+
+# Taking too long to run!!
+```{r}
+#qgraph(dist_mi, layout='spring', vsize=3)
+
+```
+
+
+
+
+reference: https://www.datanovia.com/en/blog/easy-correlation-matrix-analysis-in-r-using-corrr-package/
+```{r}
+library(corrr)
+res.cor <- correlate(Gen_1)# between time moments
+res.cor
+res.cor %>% network_plot()# T2 is not correlated because in almost all genes this is the last moment of time observed and values retur to 0
+res.cor <- correlate(Gen_1[,-11])# between time moments
+
+res.cor %>% network_plot(min_cor=0.1,colours = c("red", "white", "darkblue"))
+```
+From this graph we are understanding that the last moment of time are important for gene evolution they are highly positively correlated.This may be used as a reasoning to classify our genes based on their evolution and changes over intervals of time. 
+Moments of time from 10.5 h to 31.5h have high correlations and then a drop from this set to Cyst. So, may we consider moments of time10.5 to 31.5 for possible clusters?
+
+
+## DTW distance matrix in R
+Reference: https://stackoverflow.com/questions/49500668/calculating-a-distance-matrix-by-dtw
+
+### Example
+```{r}
+library(dtw)
+library(dtwclust)
+M<-matrix(c(2,3,4,3,2,1,2,3,4,3,2,1,1,9,9,9,0,0,0,2,1,2,3,8),nrow=6)
+M
+dtw_distmat <- proxy::dist(M, method = "dtw", upper = TRUE, diag = TRUE)
+dtw_distmat
+
+```
+
+```{r}
+
+#suppressPackageStartupMessages(library(dtw))
+Data<-as.matrix(Gen_standardized)
+dim(Data)
+dtw_distmat <- proxy::dist(Data, method = "dtw", upper = TRUE, diag = TRUE)
+head(dtw_distmat,10)
+```
+
+
+
+
+
+```{r}
+library(dtwclust)
+View(gen_T1_T2_transp)
+dtw_cluster2 = tsclust(gen_T1_T2_transp, type="partitional",k=6,preproc = zscore,distance="dtw_basic",centroid = "pam",trace=T)
+```
+
+```{r}
+plot(dtw_cluster2)
+```
+
+```{r}
+dtw_cluster2@cluster
+```
+
+```{r}
+dtw_cluster1 = tsclust(gen_T1_T2_transp, type="partitional",k=3,preproc = zscore,distance="dtw_basic",centroid = "pam",trace=T)
+```
+
+```{r}
+plot(dtw_cluster1)
+
+```
+
+
+```{r}
+plot(dtw_cluster1,type = "centroid")
+```
+
+```{r}
+plot(dtw_cluster1,type = "sc")
+
+```
+
+
+
+
+```{r}
+library(dtw);
+alignment<-dtw(Gen_standardized[1,],Gen_standardized[2,],keep=TRUE)
+```
+
+
+Refrence: https://dynamictimewarping.github.io/r/
+```{r}
+## Display the warping curve, i.e. the alignment curve
+plot(alignment,type="threeway",col="red",lwd=3)
+
+## Align and plot with the Rabiner-Juang type VI-c unsmoothed recursion
+plot(dtw(Gen_standardized[1,],Gen_standardized[2,],keep=TRUE,step=rabinerJuangStepPattern(6,"c")),type="twoway",offset=-2,lwd=3,main="Gene 1 and Gene 2");
+
+## See the recursion relation, as formula and diagram
+rabinerJuangStepPattern(6,"c")
+plot(rabinerJuangStepPattern(6,"c"),lwd=3)
+```
+
+```{r}
+# sequence  and sequence 6
+alignment<-dtw(Gen_standardized[1,],Gen_standardized[6,],keep=TRUE)
+
+## Display the warping curve, i.e. the alignment curve
+plot(alignment,type="threeway",col="red",lwd=3)
+
+## Align and plot with the Rabiner-Juang type VI-c unsmoothed recursion
+plot(dtw(Gen_standardized[1,],Gen_standardized[6,],keep=TRUE,step=rabinerJuangStepPattern(6,"c")),type="twoway",offset=-2,lwd=3,main="Gene 1 and Gene 6");
+
+## See the recursion relation, as formula and diagram
+rabinerJuangStepPattern(6,"c")
+plot(rabinerJuangStepPattern(6,"c"),lwd=3)
+```
+
+```{r}
+# sequence 1 and sequence 3000
+alignment<-dtw(Gen_standardized[1,],Gen_standardized[3000,],keep=TRUE)
+
+## Display the warping curve, i.e. the alignment curve
+plot(alignment,type="threeway",col="red",lwd=3)
+
+## Align and plot with the Rabiner-Juang type VI-c unsmoothed recursion
+plot(dtw(Gen_standardized[1,],Gen_standardized[3000,],keep=TRUE,step=rabinerJuangStepPattern(6,"c")),type="twoway",offset=-2,lwd=3,main="Gene 1 and Gene 3000");
+
+## See the recursion relation, as formula and diagram
+rabinerJuangStepPattern(6,"c")
+plot(rabinerJuangStepPattern(6,"c"),lwd=3)
+```
+
+# More work regarding DTW
+To use this function, you would simply need to pass in the matrix of gene expression time series as an argument, and the function will return a matrix of DTW distances. For example, if your matrix of gene expression time series is called `geneMatrix`, you could use the following code to calculate the DTW distances:
+
+```{r}
+calculateDTW <- function(geneMatrix) {
+  # Calculate the number of genes in the matrix
+  nGenes <- nrow(geneMatrix)
+  
+  # Create an empty matrix to store the DTW distances
+  dtwMatrix <- matrix(0, nrow = nGenes, ncol = nGenes)
+  
+  # Loop through each pair of genes
+  for (i in 1:(nGenes-1)) {
+    for (j in (i+1):nGenes) {
+      
+      # Calculate the DTW distance between the two gene expression time series
+      dtwMatrix[i,j] <- dtw(geneMatrix[i,], geneMatrix[j,], keep=T)$distance
+      dtwMatrix[j,i] <- dtwMatrix[i,j]
+    }
+  }
+  
+  return(dtwMatrix)
+}
+
+```
+
+
+```{r}
+dtwMatrix[i,j] <- dtw(geneMatrix[i,], geneMatrix[j,], keep=T)$distance
+dtwMatrix[j,i] <- dtwMatrix[i,j]
+
+```
+
+#Example
+
+```{r}
+A <- matrix(c(1,2,3,4,5,3,4,5,4,3,6,7,8,7,6,5,4,5,9,34,34,21,32,43,5,4,32,12,12,23,45,54), nrow=4, byrow=TRUE)
+
+# Calculate the DTW distance matrix for the matrix A
+dtwMatrix <- calculateDTW(A)
+
+# Print the DTW distance matrix
+print(dtwMatrix)
+
+```
+
+This matrix shows the DTW distances between each pair of gene expression time series in the matrix `A`. For example, the distance between the first and second time series is 18, the distance between the first and third time series is 151, and so on. You can use this matrix to compute the clusters of the genes using a clustering algorithm, as described in the previous response.
+
+
+```{r}
+# Load the ggplot2 package
+library(ggplot2)
+
+# Calculate the DTW distance matrix for the matrix A
+distanceMatrix <- calculateDTW(A)
+
+# Use the k-means algorithm to cluster the genes
+k <- 3  # Set the number of clusters to 3
+clusters <- kmeans(distanceMatrix, k)
+
+# Create a data frame with the gene names and cluster assignments
+geneData <- data.frame(gene=rownames(dtwMatrix), cluster = clusters$cluster)
+
+# Create a scatter plot of the gene data, with the genes in different
+# clusters being plotted in different colors
+ggplot(geneData, aes(x=1, y=gene)) +
+  geom_point(aes(color=factor(cluster))) +
+  scale_color_discrete(name="Cluster")
+
+```
+This will create a scatter plot of the genes in the matrix `A`, with the genes in each cluster being plotted in a different color. This plot can be useful for visualizing the clusters that were identified by the clustering algorithm, and can help you to understand the underlying structure of the gene expression data.
+
+```{r}
+# Load the required packages
+library(tseries)
+library(zoo)
+library(stats)
+library(fpc)
+library(ggplot2)
+
+# Define the matrix A
+A <- matrix(c(1,2,3,4,5,3,4,5,4,3,6,7,8,7,6,5,4,5,9,34,34,21,32,43,5,4,32,12,12,23,45,54), nrow=4, byrow=TRUE)
+
+# Calculate the DTW distance matrix for the matrix A
+calculateDTW <- function(geneMatrix) {
+  # Calculate the number of genes in the matrix
+  nGenes <- nrow(geneMatrix)
+  
+  # Create an empty matrix to store the DTW distances
+  dtwMatrix <- matrix(0, nrow = nGenes, ncol = nGenes)
+  
+  # Loop through each pair of genes
+  for (i in 1:(nGenes-1)) {
+    for (j in (i+1):nGenes) {
+      
+      # Calculate the DTW distance between the two gene expression time series
+      dtwMatrix[i,j] <- dtw(geneMatrix[i,], geneMatrix[j,], keep=T)$distance
+      dtwMatrix[j,i] <- dtwMatrix[i,j]
+    }
+  }
+  
+  return(dtwMatrix)
+}
+
+distanceMatrix <- calculateDTW(A)
+distanceMatrix
+# Use the k-means algorithm to cluster the genes
+
+```
+
